@@ -1,116 +1,103 @@
-// Generate random room name if needed
-if (!location.hash) {
-  location.hash = Math.floor(Math.random() * 0xFFFFFF).toString(16);
+const APP_ID = "32d2375f5d864f0f8dad7147bd915255"
+const TOKEN = "007eJxTYOja6TRjp+X5wg42tlO7vyn2zF7uVLCi7rOUHy+jjnHk7L0KDMZGKUbG5qZppikWZiZpBmkWKYkp5oYm5kkploamRqam9euqkxsCGRk2RzcwMzJAIIjPwpCbmJnHwAAAADkeOA=="
+const CHANNEL = "main"
+
+const client = AgoraRTC.createClient({mode:'rtc', codec:'vp8'})
+
+let localTracks = []
+let remoteUsers = {}
+
+let joinAndDisplayLocalStream = async () => {
+
+    client.on('user-published', handleUserJoined)
+    
+    client.on('user-left', handleUserLeft)
+    
+    let UID = await client.join(APP_ID, CHANNEL, TOKEN, null)
+
+    localTracks = await AgoraRTC.createMicrophoneAndCameraTracks() 
+
+    let player = `<div class="video-container" id="user-container-${UID}">
+                        <div class="video-player" id="user-${UID}"></div>
+                  </div>`
+    document.getElementById('video-streams').insertAdjacentHTML('beforeend', player)
+
+    localTracks[1].play(`user-${UID}`)
+    
+    await client.publish([localTracks[0], localTracks[1]])
 }
-const roomHash = location.hash.substring(1);
-  
-// TODO: Replace with your own channel ID
-const drone = new ScaleDrone('y0N6q0oVsjY9fEiu');
-// Room name needs to be prefixed with 'observable-'
-const roomName = 'observable-' + roomHash;
-const configuration = {
-  iceServers: [{
-    urls: 'stun:stun.l.google.com:19302'
-  }]
-};
-let room;
-let pc;
-  
-  
-function onSuccess() {};
-function onError(error) {
-  console.error(error);
-};
-  
-drone.on('open', error => {
-  if (error) {
-    return console.error(error);
-  }
-  room = drone.subscribe(roomName);
-  room.on('open', error => {
-    if (error) {
-      onError(error);
-    }
-  });
-  // We're connected to the room and received an array of 'members'
-  // connected to the room (including us). Signaling server is ready.
-  room.on('members', members => {
-    console.log('MEMBERS', members);
-    // If we are the second user to connect to the room we will be creating the offer
-    const isOfferer = members.length === 2;
-    startWebRTC(isOfferer);
-  });
-});
-  
-// Send signaling data via Scaledrone
-function sendMessage(message) {
-  drone.publish({
-    room: roomName,
-    message
-  });
+
+let joinStream = async () => {
+    await joinAndDisplayLocalStream()
+    document.getElementById('join-btn').style.display = 'none'
+    document.getElementById('stream-controls').style.display = 'flex'
 }
-  
-function startWebRTC(isOfferer) {
-  pc = new RTCPeerConnection(configuration);
-  
-  // 'onicecandidate' notifies us whenever an ICE agent needs to deliver a
-  // message to the other peer through the signaling server
-  pc.onicecandidate = event => {
-    if (event.candidate) {
-      sendMessage({'candidate': event.candidate});
-    }
-  };
-  
-  // If user is offerer let the 'negotiationneeded' event create the offer
-  if (isOfferer) {
-    pc.onnegotiationneeded = () => {
-      pc.createOffer().then(localDescCreated).catch(onError);
-    }
-  }
-  
-  // When a remote stream arrives display it in the #remoteVideo element
-  pc.onaddstream = event => {
-    remoteVideo.srcObject = event.stream;
-  };
-  
-  navigator.mediaDevices.getUserMedia({
-    audio: true,
-    video: true,
-  }).then(stream => {
-    // Display your local video in #localVideo element
-    localVideo.srcObject = stream;
-    // Add your stream to be sent to the conneting peer
-    pc.addStream(stream);
-  }, onError);
-  
-  // Listen to signaling data from Scaledrone
-  room.on('data', (message, client) => {
-    // Message was sent by us
-    if (client.id === drone.clientId) {
-      return;
-    }
-  
-    if (message.sdp) {
-      // This is called after receiving an offer or answer from another peer
-      pc.setRemoteDescription(new RTCSessionDescription(message.sdp), () => {
-        // When receiving an offer lets answer it
-        if (pc.remoteDescription.type === 'offer') {
-          pc.createAnswer().then(localDescCreated).catch(onError);
+
+let handleUserJoined = async (user, mediaType) => {
+    remoteUsers[user.uid] = user 
+    await client.subscribe(user, mediaType)
+
+    if (mediaType === 'video'){
+        let player = document.getElementById(`user-container-${user.uid}`)
+        if (player != null){
+            player.remove()
         }
-      }, onError);
-    } else if (message.candidate) {
-      // Add the new ICE candidate to our connections remote description
-      pc.addIceCandidate(
-        new RTCIceCandidate(message.candidate), onSuccess, onError
-      );
+
+        player = `<div class="video-container" id="user-container-${user.uid}">
+                        <div class="video-player" id="user-${user.uid}"></div> 
+                 </div>`
+        document.getElementById('video-streams').insertAdjacentHTML('beforeend', player)
+
+        user.videoTrack.play(`user-${user.uid}`)
     }
-  });
+
+    if (mediaType === 'audio'){
+        user.audioTrack.play()
+    }
 }
-  
-function localDescCreated(desc) {
-  pc.setLocalDescription(
-    desc,
-    () => sendMessage({'sdp': pc.localDescription}),
-    onError
-  );
+
+let handleUserLeft = async (user) => {
+    delete remoteUsers[user.uid]
+    document.getElementById(`user-container-${user.uid}`).remove()
 }
+
+let leaveAndRemoveLocalStream = async () => {
+    for(let i = 0; localTracks.length > i; i++){
+        localTracks[i].stop()
+        localTracks[i].close()
+    }
+
+    await client.leave()
+    document.getElementById('join-btn').style.display = 'block'
+    document.getElementById('stream-controls').style.display = 'none'
+    document.getElementById('video-streams').innerHTML = ''
+}
+
+let toggleMic = async (e) => {
+    if (localTracks[0].muted){
+        await localTracks[0].setMuted(false)
+        e.target.innerText = 'Mic on'
+        e.target.style.backgroundColor = 'cadetblue'
+    }else{
+        await localTracks[0].setMuted(true)
+        e.target.innerText = 'Mic off'
+        e.target.style.backgroundColor = '#EE4B2B'
+    }
+}
+
+let toggleCamera = async (e) => {
+    if(localTracks[1].muted){
+        await localTracks[1].setMuted(false)
+        e.target.innerText = 'Camera on'
+        e.target.style.backgroundColor = 'cadetblue'
+    }else{
+        await localTracks[1].setMuted(true)
+        e.target.innerText = 'Camera off'
+        e.target.style.backgroundColor = '#EE4B2B'
+    }
+}
+
+document.getElementById('join-btn').addEventListener('click', joinStream)
+document.getElementById('leave-btn').addEventListener('click', leaveAndRemoveLocalStream)
+document.getElementById('mic-btn').addEventListener('click', toggleMic)
+document.getElementById('camera-btn').addEventListener('click', toggleCamera)
